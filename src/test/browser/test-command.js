@@ -117,6 +117,9 @@ test("joinBackward",
      doc(hr, p("<a>there")),
      doc(p("there")))
 test("joinBackward",
+     doc(hr, p("<a>"), hr),
+     doc(hr, hr))
+test("joinBackward",
      doc(hr, blockquote(p("<a>there"))),
      doc(blockquote(p("there"))))
 test("joinBackward",
@@ -366,6 +369,26 @@ test("list_item:split",
 test("list_item:split",
      doc(ul(li(p("foo<a>ba<b>r")))),
      doc(ul(li(p("foo")), li(p("r")))))
+
+test("list_item:lift",
+     doc(ul(li(p("hello"), ul(li(p("o<a><b>ne")), li(p("two")))))),
+     doc(ul(li(p("hello")), li(p("one"), ul(li(p("two")))))))
+test("list_item:lift",
+     doc(ul(li(p("hello"), ul(li(p("o<a>ne")), li(p("two<b>")))))),
+     doc(ul(li(p("hello")), li(p("one")), li(p("two")))))
+test("list_item:lift",
+     doc(ul(li(p("hello"), ul(li(p("o<a>ne")), li(p("two<b>")), li(p("three")))))),
+     doc(ul(li(p("hello")), li(p("one")), li(p("two"), ul(li(p("three")))))))
+
+test("list_item:sink",
+     doc(ul(li(p("one")), li(p("t<a><b>wo")), li(p("three")))),
+     doc(ul(li(p("one"), ul(li(p("two")))), li(p("three")))))
+test("list_item:sink",
+     doc(ul(li(p("o<a><b>ne")), li(p("two")), li(p("three")))),
+     doc(ul(li(p("one")), li(p("two")), li(p("three")))))
+test("list_item:sink",
+     doc(ul(li(p("one")), li(ul(li(p("two")))), li(p("t<a><b>hree")))),
+     doc(ul(li(p("one")), li(ul(li(p("two")), li(p("three")))))))
 
 test("newlineInCode",
      doc(pre("foo<a>bar")),

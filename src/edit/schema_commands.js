@@ -1,5 +1,5 @@
 import {HardBreak, BulletList, OrderedList, ListItem, BlockQuote, Heading, Paragraph, CodeBlock, HorizontalRule,
-        StrongMark, EmMark, CodeMark, LinkMark, Image, Pos} from "../model"
+        StrongMark, EmMark, CodeMark, LinkMark, Image} from "../model"
 
 import {selectedNodeAttr} from "./command"
 import {toText} from "../format"
@@ -162,7 +162,7 @@ Image.register("command", "insert", {
       {label: "Image URL", attr: "src"},
       {label: "Description / alternative text", attr: "alt",
        prefill: function(pm) {
-         return selectedNodeAttr(pm, this, "alt") || toText(pm.doc.sliceBetween(pm.selection.from, pm.selection.to))
+         return selectedNodeAttr(pm, this, "alt") || toText(pm.doc.cut(pm.selection.from, pm.selection.to))
        }},
       {label: "Title", attr: "title"}
     ]
@@ -177,7 +177,7 @@ Image.register("command", "insert", {
 // ;; #path=bullet_list:wrap #kind=command
 // Wrap the selection in a bullet list.
 //
-// **Keybindings:** Alt-Right '*', Alt-Right '-'
+// **Keybindings:** Shift-Ctrl-8
 BulletList.register("command", "wrap", {
   derive: {list: true},
   label: "Wrap the selection in a bullet list",
@@ -189,13 +189,13 @@ BulletList.register("command", "wrap", {
       path: "M0 512h128v-128h-128v128zM0 256h128v-128h-128v128zM0 768h128v-128h-128v128zM256 512h512v-128h-512v128zM256 256h512v-128h-512v128zM256 768h512v-128h-512v128z"
     }
   },
-  keys: ["Alt-Right '*'", "Alt-Right '-'"]
+  keys: ["Shift-Ctrl-8"]
 })
 
 // ;; #path=ordered_list:wrap #kind=command
 // Wrap the selection in an ordered list.
 //
-// **Keybindings:** Alt-Right '1'
+// **Keybindings:** Shift-Ctrl-9
 OrderedList.register("command", "wrap", {
   derive: {list: true},
   label: "Wrap the selection in an ordered list",
@@ -207,13 +207,13 @@ OrderedList.register("command", "wrap", {
       path: "M320 512h448v-128h-448v128zM320 768h448v-128h-448v128zM320 128v128h448v-128h-448zM79 384h78v-256h-36l-85 23v50l43-2v185zM189 590c0-36-12-78-96-78-33 0-64 6-83 16l1 66c21-10 42-15 67-15s32 11 32 28c0 26-30 58-110 112v50h192v-67l-91 2c49-30 87-66 87-113l1-1z"
     }
   },
-  keys: ["Alt-Right '1'"]
+  keys: ["Shift-Ctrl-9"]
 })
 
 // ;; #path=blockquote:wrap #kind=command
 // Wrap the selection in a block quote.
 //
-// **Keybindings:** Alt-Right '>', Alt-Right '"'
+// **Keybindings:** Shift-Ctrl-.
 BlockQuote.register("command", "wrap", {
   derive: true,
   label: "Wrap the selection in a block quote",
@@ -225,7 +225,7 @@ BlockQuote.register("command", "wrap", {
       path: "M0 448v256h256v-256h-128c0 0 0-128 128-128v-128c0 0-256 0-256 256zM640 320v-128c0 0-256 0-256 256v256h256v-256h-128c0 0 0-128 128-128z"
     }
   },
-  keys: ["Alt-Right '>'", "Alt-Right '\"'"]
+  keys: ["Shift-Ctrl-."]
 })
 
 // ;; #path=hard_break:insert #kind=command
@@ -241,12 +241,13 @@ HardBreak.register("command", "insert", {
     let {node, from} = pm.selection
     if (node && node.isBlock)
       return false
-    else if (pm.doc.path(from.path).type.isCode)
+    else if (pm.doc.resolve(from).parent.type.isCode)
       return pm.tr.typeText("\n").apply(pm.apply.scroll)
     else
       return pm.tr.replaceSelection(this.create()).apply(pm.apply.scroll)
   },
-  keys: ["Mod-Enter", "Shift-Enter"]
+  keys: {all: ["Mod-Enter", "Shift-Enter"],
+         mac: ["Ctrl-Enter"]}
 })
 
 // ;; #path=list_item:split #kind=command
@@ -257,28 +258,85 @@ HardBreak.register("command", "insert", {
 ListItem.register("command", "split", {
   label: "Split the current list item",
   run(pm) {
-    let {from, to, node} = pm.selection
+    let {from, to, node} = pm.selection, $from = pm.doc.resolve(from)
     if ((node && node.isBlock) ||
-        from.path.length < 2 || !Pos.samePath(from.path, to.path)) return false
-    let toParent = from.shorten(), grandParent = pm.doc.path(toParent.path)
+        $from.depth < 2 || !$from.sameParent(pm.doc.resolve(to))) return false
+    let grandParent = $from.node($from.depth - 1)
     if (grandParent.type != this) return false
-    let nextType = to.offset == grandParent.child(toParent.offset).size ? pm.schema.defaultTextblockType() : null
+    let nextType = to == $from.end($from.depth) ? pm.schema.defaultTextblockType() : null
     return pm.tr.delete(from, to).split(from, 2, nextType).apply(pm.apply.scroll)
   },
   keys: ["Enter(50)"]
 })
 
+function selectedListItems(pm, type) {
+  let {node, from, to} = pm.selection, $from = pm.doc.resolve(from)
+  if (node && node.type == type) return {from, to, depth: $from.depth + 1}
+
+  let itemDepth = $from.parent.type == type ? $from.depth
+      : $from.depth > 0 && $from.node($from.depth - 1).type == type ? $from.depth - 1 : null
+  if (itemDepth == null) return
+
+  let $to = pm.doc.resolve(to)
+  if ($from.sameDepth($to) < itemDepth - 1) return null
+  return {from: $from.before(itemDepth),
+          to: $to.after(itemDepth),
+          depth: itemDepth}
+}
+
+// ;; #path="list_item:lift" #kind=command
+// Lift a list item into a parent list.
+//
+// **Keybindings:** Mod-[
+ListItem.register("command", "lift", {
+  label: "Lift the selected list items to an outer list",
+  run(pm) {
+    let selected = selectedListItems(pm, this)
+    if (!selected || selected.depth < 3) return false
+    let $to = pm.doc.resolve(pm.selection.to)
+    if ($to.node(selected.depth - 2).type != this) return false
+    let itemsAfter = selected.to < $to.end(selected.depth - 1)
+    let tr = pm.tr.splitIfNeeded(selected.to, 2).splitIfNeeded(selected.from, 2)
+    let end = tr.map(selected.to, -1)
+    tr.step("ancestor", tr.map(selected.from), end, {depth: 2})
+    if (itemsAfter) tr.join(end - 2)
+    return tr.apply(pm.apply.scroll)
+  },
+  keys: ["Mod-[(20)"]
+})
+
+// ;; #path="list_item:sink" #kind=command
+// Move a list item into a sublist.
+//
+// **Keybindings:** Mod-]
+ListItem.register("command", "sink", {
+  label: "Sink the selected list items into an inner list",
+  run(pm) {
+    let selected = selectedListItems(pm, this)
+    if (!selected) return false
+    let $from = pm.doc.resolve(pm.selection.from), startIndex = $from.index(selected.depth - 1)
+    if (startIndex == 0) return false
+    let parent = $from.node(selected.depth - 1), before = parent.child(startIndex - 1)
+    let tr = pm.tr.wrap(selected.from, selected.to, parent.type, parent.attrs)
+    if (before.type == this)
+      tr.join(selected.from, before.lastChild && before.lastChild.type == parent.type ? 2 : 1)
+    return tr.apply(pm.apply.scroll)
+  },
+  keys: ["Mod-](20)"]
+})
+
 for (let i = 1; i <= 10; i++)
-  // ;; #path=:heading::make_ #kind=command
+  // ;; #path="heading:make_" #kind=command
   // The commands `make1` to `make6` set the textblocks in the
   // selection to become headers with the given level.
   //
-  // **Keybindings:** Mod-1 through Mod-6
+  // **Keybindings:** Shift-Ctrl-1 through Shift-Ctrl-6
   Heading.registerComputed("command", "make" + i, type => {
+    let attrs = {level: String(i)}
     if (i <= type.maxLevel) return {
-      derive: {name: "make", attrs: {level: i}},
+      derive: {name: "make", attrs},
       label: "Change to heading " + i,
-      keys: i < 10 && [`Mod-${i}`],
+      keys: i <= 6 && [`Shift-Ctrl-${i}`],
       menu: {
         group: "textblockHeading", rank: 30 + i,
         display: {type: "label", label: "Level " + i},
@@ -290,11 +348,11 @@ for (let i = 1; i <= 10; i++)
 // ;; #path=paragraph:make #kind=command
 // Set the textblocks in the selection to be regular paragraphs.
 //
-// **Keybindings:** Mod-0
+// **Keybindings:** Shift-Ctrl-0
 Paragraph.register("command", "make", {
   derive: true,
   label: "Change to paragraph",
-  keys: ["Mod-0"],
+  keys: ["Shift-Ctrl-0"],
   menu: {
     group: "textblock", rank: 10,
     display: {type: "label", label: "Plain"},
@@ -305,11 +363,11 @@ Paragraph.register("command", "make", {
 // ;; #path=code_block:make #kind=command
 // Set the textblocks in the selection to be code blocks.
 //
-// **Keybindings:** Mod-\
+// **Keybindings:** Shift-Ctrl-\
 CodeBlock.register("command", "make", {
   derive: true,
   label: "Change to code block",
-  keys: ["Mod-\\"],
+  keys: ["Shift-Ctrl-\\"],
   menu: {
     group: "textblock", rank: 20,
     display: {type: "label", label: "Code"},

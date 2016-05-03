@@ -1,6 +1,6 @@
 import {Text, BlockQuote, OrderedList, BulletList, ListItem,
         HorizontalRule, Paragraph, Heading, CodeBlock, Image, HardBreak,
-        EmMark, StrongMark, LinkMark, CodeMark, Pos} from "../model"
+        EmMark, StrongMark, LinkMark, CodeMark, Node} from "../model"
 
 import {defineTarget} from "./register"
 
@@ -14,7 +14,7 @@ class DOMSerializer {
     this.doc = this.options.document || window.document
   }
 
-  // :: (string, ?Object, ...union<string, DOMNode>) → DOMNode
+  // :: (string, ?Object, ...[union<string, DOMNode>]) → DOMNode
   // Create a DOM node of the given type, with (optionally) the given
   // attributes and content. Content elements may be strings (for text
   // nodes) or other DOM nodes.
@@ -38,29 +38,27 @@ class DOMSerializer {
     return dom
   }
 
-  renderContent(node, where) {
+  renderFragment(fragment, where) {
     if (!where) where = this.doc.createDocumentFragment()
-    if (!node.isTextblock)
-      this.renderBlocksInto(node, where)
+    if (fragment.size == 0) return where
+
+    if (!fragment.firstChild.isInline)
+      this.renderBlocksInto(fragment, where)
     else if (this.options.renderInlineFlat)
-      this.renderInlineFlatInto(node, where)
+      this.renderInlineFlatInto(fragment, where)
     else
-      this.renderInlineInto(node, where)
+      this.renderInlineInto(fragment, where)
     return where
   }
 
-  renderBlocksInto(parent, where) {
-    for (let i = parent.iter(), child; child = i.next().value;) {
-      if (this.options.path) this.options.path.push(i.offset - child.width)
-      where.appendChild(this.renderNode(child, i.offset - child.width))
-      if (this.options.path) this.options.path.pop()
-    }
+  renderBlocksInto(fragment, where) {
+    fragment.forEach((node, offset) => where.appendChild(this.renderNode(node, offset)))
   }
 
-  renderInlineInto(parent, where) {
+  renderInlineInto(fragment, where) {
     let top = where
     let active = []
-    parent.forEach((node, offset) => {
+    fragment.forEach((node, offset) => {
       let keep = 0
       for (; keep < Math.min(active.length, node.marks.length); ++keep)
         if (!node.marks[keep].eq(active[keep])) break
@@ -77,11 +75,11 @@ class DOMSerializer {
     })
   }
 
-  renderInlineFlatInto(parent, where) {
-    parent.forEach((node, start) => {
-      let dom = this.renderNode(node, start)
+  renderInlineFlatInto(fragment, where) {
+    fragment.forEach((node, offset) => {
+      let dom = this.renderNode(node, offset)
       dom = this.wrapInlineFlat(dom, node.marks)
-      dom = this.options.renderInlineFlat(node, dom, start) || dom
+      dom = this.options.renderInlineFlat(node, dom, offset) || dom
       where.appendChild(dom)
     })
   }
@@ -103,14 +101,18 @@ class DOMSerializer {
   // Render the content of ProseMirror node into a DOM node with the
   // given tag name and attributes.
   renderAs(node, tagName, tagAttrs) {
-    let dom = this.renderContent(node, this.elt(tagName, tagAttrs))
+    if (this.options.preRenderContent) this.options.preRenderContent(node)
+
+    let dom = this.renderFragment(node.content, this.elt(tagName, tagAttrs))
     if (this.options.onContainer) this.options.onContainer(dom)
+
+    if (this.options.postRenderContent) this.options.postRenderContent(node)
     return dom
   }
 }
 
-// :: (Node, ?Object) → DOMFragment
-// Serialize the content of the given node to a DOM fragment. When not
+// :: (union<Node, Fragment>, ?Object) → DOMFragment
+// Serialize the given content to a DOM fragment. When not
 // in the browser, the `document` option, containing a DOM document,
 // should be passed so that the serialize can create nodes.
 //
@@ -127,8 +129,8 @@ class DOMSerializer {
 // with the DOM node representing the node that the attribute applies
 // to and the atttribute's value, so that it can set additional DOM
 // attributes on the DOM node.
-export function toDOM(node, options) {
-  return new DOMSerializer(options).renderContent(node)
+export function toDOM(content, options) {
+  return new DOMSerializer(options).renderFragment(content instanceof Node ? content.content : content)
 }
 
 defineTarget("dom", toDOM)
@@ -148,14 +150,14 @@ export function nodeToDOM(node, options, offset) {
   return dom
 }
 
-// :: (Node, ?Object) → string
+// :: (union<Node, Fragment>, ?Object) → string
 // Serialize a node as an HTML string. Goes through `toDOM` and then
 // serializes the result. Again, you must pass a `document` option
 // when not in the browser.
-export function toHTML(node, options) {
+export function toHTML(content, options) {
   let serializer = new DOMSerializer(options)
   let wrap = serializer.elt("div")
-  wrap.appendChild(serializer.renderContent(node))
+  wrap.appendChild(serializer.renderFragment(content instanceof Node ? content.content : content))
   return wrap.innerHTML
 }
 
@@ -167,29 +169,29 @@ function def(cls, method) { cls.prototype.serializeDOM = method }
 
 def(BlockQuote, (node, s) => s.renderAs(node, "blockquote"))
 
-BlockQuote.prototype.countCoordsAsChild = (_, path, dom, coords) => {
+BlockQuote.prototype.countCoordsAsChild = (_, pos, dom, coords) => {
   let childBox = dom.firstChild.getBoundingClientRect()
-  if (coords.left < childBox.left - 2) return Pos.from(path)
+  if (coords.left < childBox.left - 2) return pos
 }
 
 def(BulletList, (node, s) => s.renderAs(node, "ul"))
 
 def(OrderedList, (node, s) => s.renderAs(node, "ol", {start: node.attrs.order != "1" && node.attrs.order}))
 
-OrderedList.prototype.countCoordsAsChild = BulletList.prototype.countCoordsAsChild = (_, path, dom, coords) => {
-  for (let i = 0; i < dom.childNodes.length; i++) {
-    let child = dom.childNodes[i]
-    if (!child.hasAttribute("pm-offset")) continue
+OrderedList.prototype.countCoordsAsChild = BulletList.prototype.countCoordsAsChild = (_, pos, dom, coords) => {
+  for (let child = dom.firstChild; child; child = child.nextSibling) {
+    let off = child.getAttribute("pm-offset")
+    if (!off) continue
     let childBox = child.getBoundingClientRect()
     if (coords.left > childBox.left - 2) return null
     if (childBox.top <= coords.top && childBox.bottom >= coords.top)
-      return new Pos(path, i)
+      return pos + 1 + (+off)
   }
 }
 
 def(ListItem, (node, s) => s.renderAs(node, "li"))
 
-def(HorizontalRule, (_, s) => s.elt("hr"))
+def(HorizontalRule, (_, s) => s.elt("div", null, s.elt("hr")))
 
 def(Paragraph, (node, s) => s.renderAs(node, "p"))
 

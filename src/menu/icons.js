@@ -16,7 +16,7 @@ export function getIcon(name, data) {
     let svg = node.appendChild(document.createElementNS(SVG, "svg"))
     svg.style.width = (data.width / data.height) + "em"
     let use = svg.appendChild(document.createElementNS(SVG, "use"))
-    use.setAttributeNS(XLINK, "href", "#pm-icon-" + name)
+    use.setAttributeNS(XLINK, "href", /([^#]*)/.exec(document.location)[1] + "#pm-icon-" + name)
   } else if (data.dom) {
     node.appendChild(data.dom.cloneNode(true))
   } else {

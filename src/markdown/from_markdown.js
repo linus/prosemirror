@@ -1,9 +1,8 @@
 import markdownit from "markdown-it"
 import {BlockQuote, OrderedList, BulletList, ListItem,
         HorizontalRule, Paragraph, Heading, CodeBlock, Image, HardBreak,
-        EmMark, StrongMark, LinkMark, CodeMark, Mark} from "../model"
+        EmMark, StrongMark, LinkMark, CodeMark, Mark, Fragment} from "../model"
 import {defineSource} from "../format"
-import {AssertionError} from "../util/error"
 import sortedInsert from "../util/sortedinsert"
 
 // :: (Schema, string, ?Object) → Node
@@ -137,10 +136,15 @@ class MarkdownParseState {
     }
   }
 
-  // :: (NodeType, ?Object, ?[Node]) → Node
+  // :: (NodeType, ?Object, ?[Node]) → ?Node
   // Add a node at the current position.
   addNode(type, attrs, content) {
-    let node = type.createAutoFill(attrs, content, this.marks)
+    content = Fragment.from(content)
+    if (!type.checkContent(content, attrs)) {
+      content = type.fixContent(content, attrs)
+      if (!content) return null
+    }
+    let node = type.create(attrs, content, this.marks)
     this.push(node)
     return node
   }
@@ -151,7 +155,7 @@ class MarkdownParseState {
     this.stack.push({type: type, attrs: attrs, content: []})
   }
 
-  // :: () → Node
+  // :: () → ?Node
   // Close and return the node that is currently on top of the stack.
   closeNode() {
     if (this.marks.length) this.marks = noMarks
@@ -188,7 +192,7 @@ function registerTokens(tokens, name, type, info) {
   } else if (info.parse) {
     tokens[name] = info.parse.bind(type)
   } else {
-    throw new AssertionError("Unrecognized markdown parsing spec: " + info)
+    throw new RangeError("Unrecognized markdown parsing spec: " + info)
   }
 }
 
@@ -211,7 +215,7 @@ function configFromSchema(schema) {
     let modifiers = []
     schema.registry("configureMarkdown", (name, f) => {
       if (name == "init") {
-        if (init) throw new AssertionError("Two markdown parser initializers defined in schema")
+        if (init) throw new RangeError("Two markdown parser initializers defined in schema")
         init = f
       } else {
         let rank = (/_(\d+)$/.exec(name) || [0, 50])[1]
@@ -239,11 +243,11 @@ ListItem.register("parseMarkdown", "list_item", {parse: "block"})
 BulletList.register("parseMarkdown", "bullet_list", {parse: "block"})
 
 OrderedList.register("parseMarkdown", "ordered_list", {parse: "block", attrs: (state, tok) => ({
-  order: Number(state.getAttr(tok, "order") || 1)
+  order: state.getAttr(tok, "order") || "1"
 })})
 
 Heading.register("parseMarkdown", "heading", {parse: "block", attrs: function(_, tok) {
-  return {level: Math.min(this.maxLevel, +tok.tag.slice(1))}
+  return {level: "" + Math.min(this.maxLevel, +tok.tag.slice(1))}
 }})
 
 function trimTrailingNewline(str) {

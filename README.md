@@ -22,11 +22,15 @@ discussion and support requests, and the
 is the place to report issues.
 
 Documentation can be found on [the
-website](http://prosemirror.net/doc/manual.html).
+website](http://prosemirror.net/docs.html).
 
 ## Run the demo
 
 Install [Node.js](http://nodejs.org).
+
+Clone the
+[git repository](https://github.com/ProseMirror/prosemirror/). (The
+NPM package does not come with the demo files.)
 
 Inside the project directory, install the project's node dependencies
 

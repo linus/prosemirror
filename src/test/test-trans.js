@@ -1,61 +1,26 @@
 import {defaultSchema as schema} from "../model"
-import {Transform, Remapping} from "../transform"
 
-import {doc, blockquote, pre, h1, h2, p, li, ol, ul, em, strong, code, a, a2, br, hr} from "./build"
+import {doc, blockquote, pre, h1, h2, p, li, ol, ul, em, strong, code, a, a2, img, img2, dataImage, br, hr} from "./build"
 
 import {defTest} from "./tests"
-import {cmpNode, cmpStr} from "./cmp"
-import {testStepJSON} from "./test-json"
+import {tr, testTransform} from "./trans"
 
-function Tr(doc) { return new Transform(doc) }
-
-function invert(transform) {
-  let doc = transform.doc, out = Tr(doc)
-  for (let i = transform.steps.length - 1; i >= 0; i--)
-    out.step(transform.steps[i].invert(transform.docs[i], transform.maps[i]))
-  return out
-}
-
-function testMapping(maps, pos, newPos, label) {
-  let mapped = pos
-  maps.forEach(m => mapped = m.map(mapped, 1).pos)
-  cmpStr(mapped, newPos, label)
-
-  let ident = {}
-  for (let i = 0; i < maps.length; i++) ident[-i - 1] = i
-  let remap = new Remapping(maps.map(x => x.invert()), maps, ident)
-  cmpStr(remap.map(newPos, 1).pos, newPos, label + " back")
-}
-
-function testTransform(doc, expect, tr) {
-  cmpNode(tr.doc, expect)
-  let inverted = invert(tr)
-  cmpNode(inverted.doc, doc, "inverted")
-
-  testStepJSON(tr)
-
-  for (let tag in expect.tag)
-    testMapping(tr.maps, doc.tag[tag], expect.tag[tag], tag)
-}
-
-function add(name, doc, expect, style) {
-  defTest("addMark_" + name, () => {
-    testTransform(doc, expect, Tr(doc).addMark(doc.tag.a, doc.tag.b, style))
-  })
+function add(name, doc, expect, mark) {
+  defTest("addMark_" + name, () => testTransform(tr.addMark(mark), doc, expect))
 }
 
 add("simple",
     doc(p("hello <a>there<b>!")),
     doc(p("hello ", strong("there"), "!")),
-    schema.mark("strong"))
+    "strong")
 add("double_bold",
     doc(p("hello ", strong("<a>there"), "!<b>")),
     doc(p("hello ", strong("there!"))),
-    schema.mark("strong"))
+    "strong")
 add("overlap",
     doc(p("one <a>two ", em("three<b> four"))),
     doc(p("one ", strong("two ", em("three")), em(" four"))),
-    schema.mark("strong"))
+    "strong")
 add("overwrite_link",
     doc(p("this is a ", a("<a>link<b>"))),
     doc(p("this is a ", a2("link"))),
@@ -63,32 +28,30 @@ add("overwrite_link",
 add("code",
     doc(p("before"), blockquote(p("the variable is called <a>i<b>")), p("after")),
     doc(p("before"), blockquote(p("the variable is called ", code("i"))), p("after")),
-    schema.mark("code"))
+    "code")
 add("across_blocks",
     doc(p("hi <a>this"), blockquote(p("is")), p("a docu<b>ment"), p("!")),
     doc(p("hi ", em("this")), blockquote(p(em("is"))), p(em("a docu"), "ment"), p("!")),
-    schema.mark("em"))
+    "em")
 
-function rem(name, doc, expect, style) {
-  defTest("removeMark_" + name, () => {
-    testTransform(doc, expect, Tr(doc).removeMark(doc.tag.a, doc.tag.b, style))
-  })
+function rem(name, doc, expect, mark) {
+  defTest("rmMark_" + name, () => testTransform(tr.rmMark(mark), doc, expect))
 }
 
 rem("gap",
     doc(p(em("hello <a>world<b>!"))),
     doc(p(em("hello "), "world", em("!"))),
-    schema.mark("em"))
+    "em")
 rem("nothing_there",
     doc(p(em("hello"), " <a>world<b>!")),
     doc(p(em("hello"), " <a>world<b>!")),
-    schema.mark("em"))
+    "em")
 rem("from_nested",
     doc(p(em("one ", strong("<a>two<b>"), " three"))),
     doc(p(em("one two three"))),
-    schema.mark("strong"))
+    "strong")
 rem("unlink",
-    doc(p("hello ", a("link"))),
+    doc(p("<a>hello ", a("link<b>"))),
     doc(p("hello link")),
     schema.mark("link", {href: "http://foo"}))
 rem("other_link",
@@ -98,16 +61,14 @@ rem("other_link",
 rem("across_blocks",
     doc(blockquote(p(em("much <a>em")), p(em("here too"))), p("between", em("...")), p(em("end<b>"))),
     doc(blockquote(p(em("much "), "em"), p("here too")), p("between..."), p("end")),
-    schema.mark("em"))
+    "em")
 rem("all",
     doc(p("<a>hello, ", em("this is ", strong("much"), " ", a("markup<b>")))),
     doc(p("<a>hello, this is much markup")),
     null)
 
 function ins(name, doc, expect, nodes) {
-  defTest("insert_" + name, () => {
-    testTransform(doc, expect, Tr(doc).insert(doc.tag.a, nodes))
-  })
+  defTest("insert_" + name, () => testTransform(tr.ins(nodes), doc, expect))
 }
 
 ins("break",
@@ -133,9 +94,7 @@ ins("start_of_blockquote",
     schema.node("paragraph"))
 
 function del(name, doc, expect) {
-  defTest("delete_" + name, () => {
-    testTransform(doc, expect, Tr(doc).delete(doc.tag.a, doc.tag.b))
-  })
+  defTest("delete_" + name, () => testTransform(tr.del(), doc, expect))
 }
 
 del("simple",
@@ -147,11 +106,12 @@ del("only_child",
 del("outside_path",
     doc(blockquote(p("a"), "<a>", p("b"), "<b>"), p("c<1>")),
     doc(blockquote(p("a")), p("c<1>")))
+del("across_code_block",
+    doc(pre("fo<a>o"), p("b<b>ar", img)),
+    doc(pre("fo"), p("ar", img)))
 
 function txt(name, doc, expect, text) {
-  defTest("insertText_" + name, () => {
-    testTransform(doc, expect, Tr(doc).insertText(doc.tag.a, text))
-  })
+  defTest("insertText_" + name, () => testTransform(tr.txt(text), doc, expect))
 }
 
 txt("inherit_style",
@@ -192,14 +152,15 @@ txt("before_br",
     "ay")
 
 function join(name, doc, expect) {
-  defTest("join_" + name, () => {
-    testTransform(doc, expect, Tr(doc).join(doc.tag.a))
-  })
+  defTest("join_" + name, () => testTransform(tr.join(), doc, expect))
 }
 
 join("simple",
      doc(blockquote(p("<before>a")), "<a>", blockquote(p("b")), p("after<after>")),
      doc(blockquote(p("<before>a"), "<a>", p("b")), p("after<after>")))
+join("different",
+     doc(h1("foo"), "<a>", p("bar")),
+     doc(h1("foobar")))
 join("deeper",
      doc(blockquote(blockquote(p("a"), p("b<before>")), "<a>", blockquote(p("c"), p("d<after>")))),
      doc(blockquote(blockquote(p("a"), p("b<before>"), "<a>", p("c"), p("d<after>")))))
@@ -215,9 +176,8 @@ join("inline",
 
 function split(name, doc, expect, args) {
   defTest("split_" + name, () => {
-    testTransform(doc, expect, Tr(doc).split(doc.tag.a, args && args.depth,
-                                             args && args.type && schema.nodeType(args.type),
-                                             args && args.attrs))
+    let {depth, type, attrs} = args || {}
+    testTransform(tr.split("a", depth, type, attrs), doc, expect)
   })
 }
 
@@ -252,18 +212,15 @@ split("change_type",
       doc(h1("hell<a>o!")),
       doc(h1("hell"), p("<a>o!")),
       {type: "paragraph"})
-split("invalid_start",
+split("blockquote_start",
       doc(blockquote("<a>", p("x"))),
-      doc(blockquote(p("x"))))
-split("invalid_end",
+      "fail")
+split("blockquote_end",
       doc(blockquote(p("x"), "<a>")),
-      doc(blockquote(p("x"))))
-
+      "fail")
 
 function lift(name, doc, expect) {
-  defTest("lift_" + name, () => {
-    testTransform(doc, expect, Tr(doc).lift(doc.tag.a, doc.tag.b))
-  })
+  defTest("lift_" + name, () => testTransform(tr.lift(), doc, expect))
 }
 
 lift("simple_between",
@@ -301,9 +258,7 @@ lift("multiple_from_list_with_two_items",
      doc(p("one<a>"), p("<half>half"), p("two<b>"), ul(li(p("three<after>")))))
 
 function wrap(name, doc, expect, type, attrs) {
-  defTest("wrap_" + name, () => {
-    testTransform(doc, expect, Tr(doc).wrap(doc.tag.a, doc.tag.b, schema.nodeType(type), attrs))
-  })
+  defTest("wrap_" + name, () => testTransform(tr.wrap(type, attrs), doc, expect))
 }
 
 wrap("simple",
@@ -322,10 +277,6 @@ wrap("nested_list",
      doc(ol(li(p("<1>one")), li(p("<a>two"), p("<b>three")), li(p("<4>four")))),
      doc(ol(li(p("<1>one")), li(ol(li(p("<a>two")), li(p("<b>three")))), li(p("<4>four")))),
      "ordered_list")
-wrap("not_possible",
-     doc(p("hi<a>")),
-     doc(p("hi<a>")),
-     "horizontal_rule")
 wrap("include_parent",
      doc(blockquote(p("<1>one"), p("two<a>")), p("three<b>")),
      doc(blockquote(blockquote(p("<1>one"), p("two<a>")), p("three<b>"))),
@@ -336,15 +287,13 @@ wrap("bullet_list",
      "bullet_list")
 
 function type(name, doc, expect, nodeType, attrs) {
-  defTest("setType_" + name, () => {
-    testTransform(doc, expect, Tr(doc).setBlockType(doc.tag.a, doc.tag.b, schema.nodeType(nodeType), attrs))
-  })
+  defTest("blockType_" + name, () => testTransform(tr.blockType(nodeType, attrs), doc, expect))
 }
 
 type("simple",
      doc(p("am<a> i")),
      doc(h2("am i")),
-     "heading", {level: 2})
+     "heading", {level: "2"})
 type("multiple",
      doc(h1("<a>hello"), p("there"), p("<b>you"), p("end")),
      doc(pre("hello"), pre("there"), pre("you"), p("end")),
@@ -352,7 +301,7 @@ type("multiple",
 type("inside",
      doc(blockquote(p("one<a>"), p("two<b>"))),
      doc(blockquote(h1("one<a>"), h1("two<b>"))),
-     "heading", {level: 1})
+     "heading", {level: "1"})
 type("clear_markup",
      doc(p("hello<a> ", em("world"))),
      doc(pre("hello world")),
@@ -360,40 +309,61 @@ type("clear_markup",
 type("only_clear_for_code_block",
      doc(p("hello<a> ", em("world"))),
      doc(h1("hello<a> ", em("world"))),
-     "heading", {level: 1})
+     "heading", {level: "1"})
 
 function nodeType(name, doc, expect, type, attrs) {
-  defTest("nodeType_" + name, () => {
-    testTransform(doc, expect, Tr(doc).setNodeType(doc.tag.a, schema.nodeType(type), attrs))
-  })
+  defTest("nodeType_" + name, () => testTransform(tr.nodeType(type, attrs), doc, expect))
 }
 
 nodeType("valid",
          doc("<a>", p("foo")),
          doc(h1("foo")),
-         "heading", {level: 1})
+         "heading", {level: "1"})
 nodeType("invalid",
          doc("<a>", p("foo")),
-         doc(p("foo")),
+         "fail",
          "blockquote")
+nodeType("inline",
+         doc(p("foo<a>", img, "bar")),
+         doc(p("foo", img2, "bar")),
+         "image", {src: dataImage, alt: "y"})
 
 function repl(name, doc, source, expect) {
   defTest("replace_" + name, () => {
-    let tr = source ? Tr(doc).replace(doc.tag.a, doc.tag.b || doc.tag.a,
-                                      source, source && source.tag.a, source && source.tag.b)
-                    : Tr(doc).delete(doc.tag.a, doc.tag.b)
-    testTransform(doc, expect, tr)
+    testTransform(tr.repl(source ? source.slice(source.tag.a, source.tag.b) : undefined), doc, expect)
   })
 }
 
-repl("add_text",
+repl("del_text",
+     doc(p("hell<a>o y<b>ou")),
+     null,
+     doc(p("hell<a><b>ou")))
+repl("del_join",
+     doc(p("hell<a>o"), p("y<b>ou")),
+     null,
+     doc(p("hell<a><b>ou")))
+repl("del_deeper_left",
+     doc(blockquote(p("ab<a>c")), "<b>", p("def")),
+     null,
+     doc(blockquote(p("ab<a>")), "<b>", p("def")))
+repl("del_deeper_right",
+     doc(p("abc"), "<a>", blockquote(p("d<b>ef"))),
+     null,
+     doc(p("abc"), "<a>", blockquote(p("<b>ef"))))
+
+repl("overwrite_text",
      doc(p("hell<a>o y<b>ou")),
      doc(p("<a>i k<b>")),
-     doc(p("helli k<a><b>ou")))
+     doc(p("hell<a>i k<b>ou")))
+repl("insert_text",
+     doc(p("hell<a><b>o")),
+     doc(p("<a>i k<b>")),
+     doc(p("helli k<a><b>o")))
 repl("add_paragraph",
      doc(p("hello<a>you")),
      doc("<a>", p("there"), "<b>"),
      doc(p("hello"), p("there"), p("<a>you")))
+
 repl("join_text",
      doc(h1("he<a>llo"), p("arg<b>!")),
      doc(p("1<a>2<b>3")),
@@ -406,6 +376,7 @@ repl("merge_block",
      doc(p("a<a>"), p("b"), p("<b>c")),
      null,
      doc(p("a<a><b>c")))
+
 repl("move_text_down",
      doc(h1("wo<a>ah"), blockquote(p("ah<b>ha"))),
      null,
@@ -414,6 +385,7 @@ repl("move_text_up",
      doc(blockquote(p("foo<a>bar")), p("middle"), h1("quux<b>baz")),
      null,
      doc(blockquote(p("foo<a><b>baz"))))
+
 repl("stitch_deep",
      doc(blockquote(ul(li(p("a")), li(p("b<a>")), li(p("c")), li(p("<b>d")), li(p("e"))))),
      null,
@@ -429,11 +401,12 @@ repl("insert_paragraph_open_edges",
 repl("overwrite_paragraph",
      doc(p("one<a>"), p("t<inside>wo"), p("<b>three<end>")),
      doc(p("a<a>"), p("TWO"), p("<b>b")),
-     doc(p("one"), p("TWO"), p("<a>three<end>")))
+     doc(p("one<a>"), p("TWO"), p("<inside>three<end>")))
 repl("stitch",
      doc(p("foo ", em("bar<a>baz"), "<b> quux")),
      doc(p("foo ", em("xy<a>zzy"), " foo<b>")),
      doc(p("foo ", em("barzzy"), " foo quux")))
+
 repl("break",
      doc(p("foo<a>b<inside>b<b>bar")),
      doc(p("<a>", br, "<b>")),
@@ -443,9 +416,13 @@ repl("cut_different_block",
      null,
      doc(h1("helle")))
 repl("restore_list",
-     doc(h1("hell<a>o"), p("by<b>e")),
+     doc(h1("hell<a>o"), "<b>"),
      doc(ol(li(p("on<a>e")), li(p("tw<b>o")))),
-     doc(h1("helle"), ol(li(p("twe")))))
+     doc(h1("helle"), ol(li(p("tw")))))
+repl("restore_list_text_after",
+     doc(h1("hell<a>o"), p("yo<b>u")),
+     doc(ol(li(p("on<a>e")), li(p("tw<b>o")))),
+     doc(h1("helle"), ol(li(p("twu")))))
 repl("in_empty_block",
      doc(p("a"), p("<a>"), p("b")),
      doc(p("x<a>y<b>z")),
@@ -454,22 +431,27 @@ repl("dont_shift_everything",
      doc(p("one<a>"), p("two"), p("three")),
      doc(p("outside<a>"), blockquote(p("inside<b>"))),
      doc(p("one"), blockquote(p("inside")), p("two"), p("three")))
-repl("del_selection",
-     doc(p("some <a>te<b>xt")),
-     null,
-     doc(p("some <a><b>xt")))
+repl("close_parent",
+     doc(blockquote(p("b<a>c"), p("d<b>e"), p("f"))),
+     doc(blockquote(p("x<a>y")), p("after"), "<b>"),
+     doc(blockquote(p("b<a>y")), p("after"), blockquote(p("<b>e"), p("f"))))
 repl("lopsided",
      doc(blockquote(p("b<a>c"), p("d<b>e"), p("f"))),
      doc(blockquote(p("x<a>y")), p("z<b>")),
-     doc(blockquote(p("by")), p("z<a><b>e"), blockquote(p("f"))))
+     doc(blockquote(p("b<a>y")), p("z<b>e"), blockquote(p("f"))))
 repl("deep_insert",
      doc(blockquote(blockquote(p("one"), p("tw<a>o"), p("t<b>hree<3>"), p("four<4>")))),
      doc(ol(li(p("hello<a>world")), li(p("bye"))), p("ne<b>xt")),
-     doc(blockquote(blockquote(p("one"), p("twworld"), ol(li(p("bye"))), p("ne<a><b>hree<3>"), p("four<4>")))))
+     doc(blockquote(blockquote(p("one"), p("tw<a>world")), ol(li(p("bye"))), p("ne<b>hree<3>"), blockquote(p("four<4>")))))
 repl("join_inequal",
      doc(h1("hello<a>"), p("<b>you<1>")),
      null,
      doc(h1("hello<a><b>you<1>")))
+
+repl("sticking_out_right",
+     doc(p("x"), "<a>"),
+     doc("<a>", ul(li(p("a")), li("<b>", p("b")))),
+     doc(p("x"), ul(li(p("a")), li(p())), "<a>"))
 repl("delete_whole_doc",
      doc("<a>", h1("hi"), p("you"), "<b>"),
      null,

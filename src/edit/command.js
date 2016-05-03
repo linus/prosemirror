@@ -1,10 +1,9 @@
 import Keymap from "browserkeymap"
 
-import {Pos, NodeType, MarkType} from "../model"
+import {NodeType, MarkType} from "../model"
 import {canWrap} from "../transform"
 import {browser} from "../dom"
 import sortedInsert from "../util/sortedinsert"
-import {NamespaceError, AssertionError} from "../util/error"
 import {copyObj} from "../util/obj"
 
 import {baseCommands} from "./base_commands"
@@ -22,7 +21,7 @@ export class Command {
   constructor(spec, self, name) {
     // :: string The name of the command.
     this.name = name
-    if (!this.name) throw new NamespaceError("Trying to define a command without a name")
+    if (!this.name) throw new RangeError("Trying to define a command without a name")
     // :: CommandSpec The command's specifying object.
     this.spec = spec
     this.self = self
@@ -44,7 +43,7 @@ export class Command {
       return new pm.options.commandParamPrompt(pm, this).open()
     } else {
       if (this.params.length != (params ? params.length : 0))
-        throw new AssertionError("Invalid amount of parameters for command " + this.name)
+        throw new RangeError("Invalid amount of parameters for command " + this.name)
       return run.call(this.self, pm, ...params)
     }
   }
@@ -87,7 +86,7 @@ function deriveCommandSpec(type, spec, name) {
   let conf = typeof spec.derive == "object" ? spec.derive : {}
   let dname = conf.name || name
   let derive = type.constructor.derivableCommands[dname]
-  if (!derive) throw new AssertionError("Don't know how to derive command " + dname)
+  if (!derive) throw new RangeError("Don't know how to derive command " + dname)
   let derived = derive.call(type, conf)
   for (let prop in spec) if (prop != "derive") derived[prop] = spec[prop]
   return derived
@@ -114,7 +113,7 @@ export class CommandSet {
     return new CommandSet(this, (commands, schema) => {
       function add(name, spec, self) {
         if (!filter || filter(name, spec)) {
-          if (commands[name]) throw new AssertionError("Duplicate definition of command " + name)
+          if (commands[name]) throw new RangeError("Duplicate definition of command " + name)
           commands[name] = new Command(spec, self, name)
         }
       }
@@ -254,9 +253,12 @@ function deriveKeymap(pm) {
   for (let name in pm.commands) {
     let cmd = pm.commands[name], keys = cmd.spec.keys
     if (!keys) continue
-    if (Array.isArray(keys)) add(cmd, keys)
-    if (keys.all) add(cmd, keys.all)
-    if (keys[platform]) add(cmd, keys[platform])
+    if (Array.isArray(keys)) {
+      add(cmd, keys)
+    } else {
+      if (keys.all) add(cmd, keys.all)
+      if (keys[platform]) add(cmd, keys[platform])
+    }
   }
 
   for (let key in bindings)
@@ -287,7 +289,7 @@ function markActive(pm, type) {
 function canAddInline(pm, type) {
   let {from, to, empty} = pm.selection
   if (empty)
-    return !type.isInSet(pm.activeMarks()) && pm.doc.path(from.path).type.canContainMark(type)
+    return !type.isInSet(pm.activeMarks()) && pm.doc.resolve(from).parent.type.canContainMark(type)
   let can = false
   pm.doc.nodesBetween(from, to, node => {
     if (can || node.isTextblock && !node.type.canContainMark(type)) return false
@@ -314,9 +316,8 @@ function selectedMarkAttr(pm, type, attr) {
   if (empty) {
     start = end = type.isInSet(pm.activeMarks())
   } else {
-    let startParent = pm.doc.path(from.path)
-    let startChunk = startParent.size > from.offset && startParent.chunkAfter(from.offset)
-    start = startChunk ? type.isInSet(startChunk.node.marks) : null
+    let startChunk = pm.doc.resolve(from).nodeAfter
+    start = startChunk ? type.isInSet(startChunk.marks) : null
     end = type.isInSet(pm.doc.marksAt(to))
   }
   if (start && end && start.attrs[attr] == end.attrs[attr])
@@ -381,31 +382,33 @@ MarkType.derivableCommands.toggle = () => ({
 })
 
 function isAtTopOfListItem(doc, from, to, listType) {
-  return Pos.samePath(from.path, to.path) &&
-    from.path.length >= 2 &&
-    from.path[from.path.length - 1] == 0 &&
-    listType.canContain(doc.path(from.path.slice(0, from.path.length - 1)))
+  let $from = doc.resolve(from)
+  return $from.sameParent(doc.resolve(to)) &&
+    $from.depth >= 2 &&
+    $from.index($from.depth - 1) == 0 &&
+    listType.canContain($from.node($from.depth - 1))
 }
 
 NodeType.derivableCommands.wrap = function(conf) {
   return {
     run(pm, ...params) {
       let {from, to, head} = pm.selection, doJoin = false
+      let $from = pm.doc.resolve(from)
       if (conf.list && head && isAtTopOfListItem(pm.doc, from, to, this)) {
         // Don't do anything if this is the top of the list
-        if (from.path[from.path.length - 2] == 0) return false
+        if ($from.index($from.depth - 2) == 0) return false
         doJoin = true
       }
       let tr = pm.tr.wrap(from, to, this, fillAttrs(conf, params))
-      if (doJoin) tr.join(from.shorten(from.depth - 2))
+      if (doJoin) tr.join($from.before($from.depth - 1))
       return tr.apply(pm.apply.scroll)
     },
     select(pm) {
-      let {from, to, head} = pm.selection
+      let {from, to, head} = pm.selection, $from
       if (conf.list && head && isAtTopOfListItem(pm.doc, from, to, this) &&
-          from.path[from.path.length - 2] == 0)
+          ($from = pm.doc.resolve(from)).index($from.depth - 2) == 0)
         return false
-      return canWrap(pm.doc, from, to, this, conf.attrs)
+      return canWrap(pm.doc, from, to, this)
     },
     params: deriveParams(this, conf.params)
   }
@@ -426,8 +429,9 @@ function alreadyHasBlockType(doc, from, to, type, attrs) {
 function activeTextblockIs(pm, type, attrs) {
   let {from, to, node} = pm.selection
   if (!node || node.isInline) {
-    if (!Pos.samePath(from.path, to.path)) return false
-    node = pm.doc.path(from.path)
+    let $from = pm.doc.resolve(from)
+    if (!$from.sameParent(pm.doc.resolve(to))) return false
+    node = $from.parent
   } else if (!node.isTextblock) {
     return false
   }
@@ -458,7 +462,7 @@ NodeType.derivableCommands.insert = function(conf) {
       return pm.tr.replaceSelection(this.create(fillAttrs(conf, params))).apply(pm.apply.scroll)
     },
     select: this.isInline ? function(pm) {
-      return pm.doc.path(pm.selection.from.path).type.canContainType(this)
+      return pm.doc.resolve(pm.selection.from).parent.type.canContainType(this)
     } : null,
     params: deriveParams(this, conf.params)
   }

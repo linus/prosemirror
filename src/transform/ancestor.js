@@ -1,9 +1,8 @@
-import {Pos, Fragment} from "../model"
+import {Slice, Fragment} from "../model"
 
 import {Transform} from "./transform"
 import {Step, StepResult} from "./step"
-import {isFlatRange} from "./tree"
-import {PosMap, MovedRange, ReplacedRange} from "./map"
+import {PosMap} from "./map"
 
 // !! **`ancestor`**
 //    : Change the stack of nodes that wrap the part of the document
@@ -21,73 +20,58 @@ import {PosMap, MovedRange, ReplacedRange} from "./map"
 //      should be an array of `NodeType`s, and the second, optionally,
 //      an array of attribute objects.
 
+function isFlatRange($from, $to) {
+  if ($from.depth != $to.depth) return false
+  for (let i = 0; i < $from.depth; i++)
+    if ($from.index(i) != $to.index(i)) return false
+  return $from.parentOffset <= $to.parentOffset
+}
+
 Step.define("ancestor", {
   apply(doc, step) {
-    let from = step.from, to = step.to
-    if (!isFlatRange(from, to)) return null
-    let toParent = from.path, start = from.offset, end = to.offset
-    let {depth = 0, types = [], attrs = []} = step.param
-    let inner = doc.path(from.path)
-    for (let i = 0; i < depth; i++) {
-      if (start > 0 || end < doc.path(toParent).size || toParent.length == 0) return null
-      start = toParent[toParent.length - 1]
-      end = start + 1
-      toParent = toParent.slice(0, toParent.length - 1)
-    }
-    if (depth == 0 && types.length == 0) return null
+    let $from = doc.resolve(step.from), $to = doc.resolve(step.to)
+    if (!isFlatRange($from, $to)) return StepResult.fail("Not a flat range")
 
-    let parent = doc.path(toParent), parentSize = parent.size, newParent
-    if (parent.type.locked) return null
+    let {depth = 0, types = [], attrs = []} = step.param
+    if (depth == 0 && types.length == 0) return StepResult.ok(doc)
+
+    for (let i = 0, d = $from.depth; i < depth; i++, d--)
+      if ($from.start(d) != $from.pos - i || $to.end(d) != $to.pos + i)
+        return StepResult.fail("Parent at depth " + d + " not fully covered")
+
+    let inner = $from.parent, slice
     if (types.length) {
       let lastWrapper = types[types.length - 1]
-      let content = inner.content.slice(from.offset, to.offset)
-      if (!parent.type.canContainType(types[0]) ||
-          content.some(n => !lastWrapper.canContain(n)) ||
-          !inner.size && !lastWrapper.canBeEmpty ||
-          lastWrapper.locked)
-        return null
-      let node = null
+      if (!lastWrapper.contains)
+        throw new RangeError("Can not wrap content in node type " + lastWrapper.name)
+      let content = inner.content.cut($from.parentOffset, $to.parentOffset)
+      if (!lastWrapper.checkContent(content, attrs[types.length - 1]))
+        return StepResult.fail("Content can not be wrapped in ancestor " + lastWrapper.name)
       for (let i = types.length - 1; i >= 0; i--)
-        node = types[i].create(attrs[i], node || content)
-      newParent = parent.splice(start, end, Fragment.from(node))
+        content = Fragment.from(types[i].create(attrs[i], content))
+      slice = new Slice(content, 0, 0)
     } else {
-      if (!parent.type.canContainFragment(inner.content) ||
-          !inner.size && start == 0 && end == parent.size && !parent.type.canBeEmpty)
-        return null
-      newParent = parent.splice(start, end, inner.content)
+      slice = new Slice(inner.content, 0, 0)
     }
-    let copy = doc.replaceDeep(toParent, newParent)
-
-    let toInner = toParent.slice()
-    for (let i = 0; i < types.length; i++) toInner.push(i ? 0 : start)
-    let startOfInner = new Pos(toInner, types.length ? 0 : start)
-    let replaced = null
-    let insertedSize = types.length ? 1 : to.offset - from.offset
-    if (depth != types.length || depth > 1 || types.length > 1) {
-      let posBefore = new Pos(toParent, start)
-      let posAfter1 = new Pos(toParent, end), posAfter2 = new Pos(toParent, start + insertedSize)
-      let endOfInner = new Pos(toInner, startOfInner.offset + (to.offset - from.offset))
-      replaced = [new ReplacedRange(posBefore, from, posBefore, startOfInner),
-                  new ReplacedRange(to, posAfter1, endOfInner, posAfter2, posAfter1, posAfter2)]
-    }
-    let moved = [new MovedRange(from, to.offset - from.offset, startOfInner)]
-    if (end - start != insertedSize)
-      moved.push(new MovedRange(new Pos(toParent, end), parentSize - end,
-                                new Pos(toParent, start + insertedSize)))
-    return new StepResult(copy, new PosMap(moved, replaced))
+    return StepResult.fromReplace(doc, $from.pos - depth, $to.pos + depth, slice)
   },
-  invert(step, oldDoc, map) {
+  posMap(step) {
+    let depth = step.param.depth || 0, newDepth = step.param.types ? step.param.types.length : 0
+    if (depth == newDepth && depth < 2) return PosMap.empty
+    return new PosMap([step.from - depth, depth, newDepth,
+                       step.to, depth, newDepth])
+  },
+  invert(step, oldDoc) {
     let types = [], attrs = []
-    if (step.param.depth) for (let i = 0; i < step.param.depth; i++) {
-      let parent = oldDoc.path(step.from.path.slice(0, step.from.path.length - i))
+    let $from = oldDoc.resolve(step.from)
+    let oldDepth = step.param.depth || 0, newDepth = step.param.types ? step.param.types.length : 0
+    for (let i = 0; i < oldDepth; i++) {
+      let parent = $from.node($from.depth - i)
       types.unshift(parent.type)
       attrs.unshift(parent.attrs)
     }
-    let newFrom = map.map(step.from).pos
-    let newTo = step.from.cmp(step.to) ? map.map(step.to, -1).pos : newFrom
-    return new Step("ancestor", newFrom, newTo, null,
-                    {depth: step.param.types ? step.param.types.length : 0,
-                     types, attrs})
+    let dDepth = newDepth - oldDepth
+    return new Step("ancestor", step.from + dDepth, step.to + dDepth, {depth: newDepth, types, attrs})
   },
   paramToJSON(param) {
     return {depth: param.depth,
@@ -101,133 +85,149 @@ Step.define("ancestor", {
   }
 })
 
-function canBeLifted(doc, range) {
-  let content = [doc.path(range.from.path)], unwrap = false
-  for (;;) {
-    let parentDepth = -1
-    for (let node = doc, i = 0; i < range.from.path.length; i++) {
-      if (!content.some(inner => !node.type.canContainContent(inner.type)))
-        parentDepth = i
-      node = node.child(range.from.path[i])
-    }
-    if (parentDepth > -1)
-      return {path: range.from.path.slice(0, parentDepth), unwrap}
-    if (unwrap || !content[0].isBlock) return null
-    content = content[0].content.slice(range.from.offset, range.to.offset)
-    unwrap = true
-  }
-}
-
-// :: (Node, Pos, ?Pos) → bool
-// Tells you whether the given positions' [sibling
-// range](#Node.siblingRange), or any of its ancestor nodes, can be
-// lifted out of a parent.
+// :: (Node, number, ?number) → bool
+// Tells you whether the range in the given positions' shared
+// ancestor, or any of _its_ ancestor nodes, can be lifted out of a
+// parent.
 export function canLift(doc, from, to) {
-  let range = doc.siblingRange(from, to || from)
-  let found = canBeLifted(doc, range)
-  if (found) return {found, range}
+  return !!findLiftable(doc.resolve(from), doc.resolve(to == null ? from : to))
 }
 
-// :: (Pos, ?Pos) → Transform
+function rangeDepth(from, to) {
+  let shared = from.sameDepth(to)
+  if (from.node(shared).isTextblock) --shared
+  if (shared && from.before(shared) >= to.after(shared)) return null
+  return shared
+}
+
+function findLiftable(from, to) {
+  let shared = rangeDepth(from, to)
+  if (shared == null) return null
+  let parent = from.node(shared)
+  for (let depth = shared - 1; depth >= 0; --depth)
+    if (from.node(depth).type.canContainContent(parent.type))
+      return {depth, shared, unwrap: false}
+
+  if (parent.isBlock) for (let depth = shared - 1; depth >= 0; --depth) {
+    let target = from.node(depth)
+    for (let i = from.index(shared), e = Math.min(to.index(shared) + 1, parent.childCount); i < e; i++)
+      if (!target.type.canContainContent(parent.child(i).type)) continue
+    return {depth, shared, unwrap: true}
+  }
+}
+
+// :: (number, ?number, ?bool) → Transform
 // Lift the nearest liftable ancestor of the [sibling
-// range](#Node.siblingRange) of the given positions out of its
-// parent (or do nothing if no such node exists).
-Transform.prototype.lift = function(from, to = from) {
-  let can = canLift(this.doc, from, to)
-  if (!can) return this
-  let {found, range} = can
-  let depth = range.from.path.length - found.path.length
-  let rangeNode = found.unwrap && this.doc.path(range.from.path)
+// range](#Node.siblingRange) of the given positions out of its parent
+// (or do nothing if no such node exists). When `silent` is true, this
+// won't raise an error when the lift is impossible.
+Transform.prototype.lift = function(from, to = from, silent = false) {
+  let $from = this.doc.resolve(from), $to = this.doc.resolve(to)
+  let liftable = findLiftable($from, $to)
+  if (!liftable) {
+    if (!silent) throw new RangeError("No valid lift target")
+    return this
+  }
 
-  for (let d = 0, pos = range.to;; d++) {
-    if (pos.offset < this.doc.path(pos.path).size) {
-      this.split(pos, depth - d)
-      break
+  let {depth, shared, unwrap} = liftable
+  let start = $from.before(shared + 1), end = $to.after(shared + 1)
+
+  for (let d = shared; d > depth; d--) if ($to.index(d) + 1 < $to.node(d).childCount) {
+    this.split($to.after(d + 1), d - depth)
+    break
+  }
+
+  for (let d = shared; d > depth; d--) if ($from.index(d) > 0) {
+    let cut = d - depth
+    this.split($from.before(d + 1), cut)
+    start += 2 * cut
+    end += 2 * cut
+    break
+  }
+
+  if (unwrap) {
+    let joinPos = start, parent = $from.node(shared)
+    for (let i = $from.index(shared), e = $to.index(shared) + 1, first = true; i < e; i++, first = false) {
+      if (!first) {
+        this.join(joinPos)
+        end -= 2
+      }
+      joinPos += parent.child(i).nodeSize - (first ? 0 : 2)
     }
-    if (d == depth - 1) break
-    pos = pos.shorten(null, 1)
+    shared++
+    start++
+    end--
   }
-  for (let d = 0, pos = range.from;; d++) {
-    if (pos.offset > 0) {
-      this.split(pos, depth - d)
-      let cut = range.from.path.length - depth, path = pos.path.slice(0, cut).concat(pos.path[cut] + 1)
-      while (path.length < range.from.path.length) path.push(0)
-      range = {from: new Pos(path, 0), to: new Pos(path, range.to.offset - range.from.offset)}
-      break
-    }
-    if (d == depth - 1) break
-    pos = pos.shorten()
-  }
-  if (found.unwrap) {
-    for (let i = range.to.offset - 1; i > range.from.offset; i--)
-      this.join(new Pos(range.from.path, i))
-    let size = 0
-    for (let i = rangeNode.iter(range.from.offset, range.to.offset), child; child = i.next().value;)
-      size += child.size
-    let path = range.from.path.concat(range.from.offset)
-    range = {from: new Pos(path, 0), to: new Pos(path, size)}
-    ++depth
-  }
-  this.step("ancestor", range.from, range.to, null, {depth: depth})
-  return this
+  return this.step("ancestor", start, end, {depth: shared - depth})
 }
 
-// :: (Node, Pos, ?Pos, NodeType) → bool
+// :: (Node, number, ?number, NodeType) → bool
 // Determines whether the [sibling range](#Node.siblingRange) of the
 // given positions can be wrapped in the given node type.
 export function canWrap(doc, from, to, type) {
-  let range = doc.siblingRange(from, to || from)
-  if (range.from.offset == range.to.offset) return null
-  let parent = doc.path(range.from.path)
-  let around = parent.type.findConnection(type)
-  let inside = type.findConnection(parent.child(range.from.offset).type)
-  if (around && inside) return {range, around, inside}
+  return !!checkWrap(doc.resolve(from), doc.resolve(to == null ? from : to), type)
 }
 
-// :: (Pos, ?Pos, NodeType, ?Object) → Transform
+function checkWrap($from, $to, type) {
+  let shared = rangeDepth($from, $to)
+  if (shared == null) return null
+  let parent = $from.node(shared)
+  let around = parent.type.findConnection(type)
+  let inside = type.findConnection(parent.child($from.index(shared)).type)
+  if (around && inside) return {shared, around, inside}
+}
+
+// :: (number, ?number, NodeType, ?Object) → Transform
 // Wrap the [sibling range](#Node.siblingRange) of the given positions
 // in a node of the given type, with the given attributes (if
 // possible).
-Transform.prototype.wrap = function(from, to, type, wrapAttrs) {
-  let can = canWrap(this.doc, from, to, type)
-  if (!can) return this
-  let {range, around, inside} = can
+Transform.prototype.wrap = function(from, to = from, type, wrapAttrs) {
+  let $from = this.doc.resolve(from), $to = this.doc.resolve(to)
+  let check = checkWrap($from, $to, type)
+  if (!check) throw new RangeError("Wrap not possible")
+  let {shared, around, inside} = check
+
   let types = around.concat(type).concat(inside)
   let attrs = around.map(() => null).concat(wrapAttrs).concat(inside.map(() => null))
-  this.step("ancestor", range.from, range.to, null, {types, attrs})
+  let start = $from.before(shared + 1)
+  this.step("ancestor", start, $to.after(shared + 1), {types, attrs})
   if (inside.length) {
-    let toInner = range.from.path.slice()
-    for (let i = 0; i < around.length + inside.length + 1; i++)
-      toInner.push(i ? 0 : range.from.offset)
-    for (let i = range.to.offset - 1 - range.from.offset; i > 0; i--)
-      this.split(new Pos(toInner, i), inside.length)
+    let splitPos = start + types.length, parent = $from.node(shared)
+    for (let i = $from.index(shared), e = $to.index(shared) + 1, first = true; i < e; i++, first = false) {
+      if (!first)
+        this.split(splitPos, inside.length)
+      splitPos += parent.child(i).nodeSize + (first ? 0 : 2 * inside.length)
+    }
   }
   return this
 }
 
-// :: (Pos, ?Pos, NodeType, ?Object) → Transform
+// :: (number, ?number, NodeType, ?Object) → Transform
 // Set the type of all textblocks (partly) between `from` and `to` to
 // the given node type with the given attributes.
-Transform.prototype.setBlockType = function(from, to, type, attrs) {
-  this.doc.nodesBetween(from, to || from, (node, path) => {
+Transform.prototype.setBlockType = function(from, to = from, type, attrs) {
+  if (!type.isTextblock) throw new RangeError("Type given to setBlockType should be a textblock")
+  this.doc.nodesBetween(from, to, (node, pos) => {
     if (node.isTextblock && !node.hasMarkup(type, attrs)) {
-      path = path.slice()
       // Ensure all markup that isn't allowed in the new node type is cleared
-      this.clearMarkup(new Pos(path, 0), new Pos(path, node.size), type)
-      this.step("ancestor", new Pos(path, 0), new Pos(path, this.doc.path(path).size),
-                null, {depth: 1, types: [type], attrs: [attrs]})
+      let start = pos + 1, end = start + node.content.size
+      this.clearMarkup(this.map(start), this.map(end), type)
+      this.step("ancestor", this.map(start), this.map(end),
+                {depth: 1, types: [type], attrs: [attrs]})
       return false
     }
   })
   return this
 }
 
-// :: (Pos, NodeType, ?Object) → Transform
+// :: (number, ?NodeType, ?Object) → Transform
 // Change the type and attributes of the node after `pos`.
 Transform.prototype.setNodeType = function(pos, type, attrs) {
-  let node = this.doc.nodeAfter(pos)
-  let path = pos.toPath()
-  this.step("ancestor", new Pos(path, 0), new Pos(path, node.size), null,
-            {depth: 1, types: [type], attrs: [attrs]})
-  return this
+  let node = this.doc.nodeAt(pos)
+  if (!node) throw new RangeError("No node at given position")
+  if (!type) type = node.type
+  if (node.type.contains)
+    return this.step("ancestor", pos + 1, pos + 1 + node.content.size, {depth: 1, types: [type], attrs: [attrs]})
+  else
+    return this.replaceWith(pos, pos + node.nodeSize, type.create(attrs, null, node.marks))
 }

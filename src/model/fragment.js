@@ -1,29 +1,15 @@
-import {ModelError} from "./error"
-
-// ;; A fragment is an abstract type used to represent a node's
-// collection of child nodes. It tries to hide considerations about
-// the actual way in which the child nodes are stored, so that
-// different representations (nodes that only contain simple nodes
-// versus nodes that also contain text) can be approached using the
-// same API.
+// ;; Fragment is the type used to represent a node's collection of
+// child nodes.
 //
 // Fragments are persistent data structures. That means you should
 // _not_ mutate them or their content, but create new instances
 // whenever needed. The API tries to make this easy.
 export class Fragment {
-  // :: (Fragment, number, number) → Fragment
-  // Create a fragment that combines this one with another fragment.
-  // Takes care of merging adjacent text nodes and can also merge
-  // “open” nodes at the boundary. `joinLeft` and `joinRight` give the
-  // depth to which the left and right fragments are open. If open
-  // nodes with the same markup are found on both sides, they are
-  // joined. If not, the open nodes are [closed](#Node.close).
-  append(other, joinLeft = 0, joinRight = 0) {
-    if (!this.size)
-      return joinRight ? other.replace(0, other.firstChild.close(joinRight - 1, "start")) : other
-    if (!other.size)
-      return joinLeft ? this.replace(this.size - 1, this.lastChild.close(joinLeft - 1, "end")) : this
-    return this.appendInner(other, joinLeft, joinRight)
+  constructor(content, size) {
+    this.content = content
+    this.size = size || 0
+    if (size == null) for (let i = 0; i < content.length; i++)
+      this.size += content[i].nodeSize
   }
 
   // :: string
@@ -31,107 +17,129 @@ export class Fragment {
   // children.
   get textContent() {
     let text = ""
-    this.forEach(n => text += n.textContent)
+    this.content.forEach(n => text += n.textContent)
     return text
   }
 
   // :: () → string
   // Return a debugging string that describes this fragment.
-  toString() {
-    let str = ""
-    this.forEach(n => str += (str ? ", " : "") + n.toString())
-    return str
-  }
+  toString() { return "<" + this.toStringInner() + ">" }
 
-  // :: (number, number, ?(Node) → Node) → [Node]
-  // Produce an array with the child nodes between the given
-  // boundaries, optionally mapping a function over them.
-  toArray(from = 0, to = this.size, f) {
-    let result = []
-    for (let iter = this.iter(from, to), n; n = iter.next().value;) result.push(f ? f(n) : n)
-    return result
-  }
+  toStringInner() { return this.content.join(", ") }
 
-  // :: ((Node) → Node) → Fragment
-  // Produce a new Fragment by mapping all this fragment's children
-  // through a function.
-  map(f) {
-    return Fragment.fromArray(this.toArray(undefined, undefined, f))
-  }
-
-  // :: ((Node) → bool) → ?Node
-  // Returns the first child node for which the given function returns
-  // `true`, or undefined otherwise.
-  some(f) {
-    for (let iter = this.iter(), n; n = iter.next().value;)
-      if (f(n)) return n
-  }
-
-  close(depth, side) {
-    let child = side == "start" ? this.firstChild : this.lastChild
-    let closed = child.close(depth - 1, side)
-    if (closed == child) return this
-    return this.replace(side == "start" ? 0 : this.size - 1, closed)
-  }
-
-  nodesBetween(from, to, f, path, parent) {
-    let moreFrom = from && from.depth > path.length, moreTo = to && to.depth > path.length
-    let start = moreFrom ? from.path[path.length] : from ? from.offset : 0
-    let end = moreTo ? to.path[path.length] + 1 : to ? to.offset : this.size
-    for (let iter = this.iter(start, end), node; node = iter.next().value;) {
-      let startOffset = iter.offset - node.width
-      path.push(startOffset)
-      node.nodesBetween(moreFrom && startOffset == start ? from : null,
-                        moreTo && iter.offset == end ? to : null,
-                        f, path, parent)
-      path.pop()
+  nodesBetween(from, to, f, nodeStart, parent) {
+    for (let i = 0, pos = 0; pos < to; i++) {
+      let child = this.content[i], end = pos + child.nodeSize
+      if (end > from && f(child, nodeStart + pos, parent) !== false && child.content.size) {
+        let start = pos + 1
+        child.nodesBetween(Math.max(0, from - start),
+                           Math.min(child.content.size, to - start),
+                           f, nodeStart + start)
+      }
+      pos = end
     }
   }
 
-  // :: (?Pos, ?Pos) → Fragment
-  // Slice out the sub-fragment between the two given positions.
-  // `null` can be passed for either to indicate the slice should go
-  // all the way to the start or end of the fragment.
-  sliceBetween(from, to, depth = 0) {
-    let moreFrom = from && from.depth > depth, moreTo = to && to.depth > depth
-    let start = moreFrom ? from.path[depth] : from ? from.offset : 0
-    let end = moreTo ? to.path[depth] + 1 : to ? to.offset : this.size
-    let nodes = []
-    for (let iter = this.iter(start, end), node; node = iter.next().value;) {
-      let passFrom = moreFrom && (iter.offset - node.width) == start ? from : null
-      let passTo = moreTo && iter.offset == end ? to : null
-      if (passFrom || passTo)
-        node = node.sliceBetween(passFrom, passTo, depth + 1)
-      nodes.push(node)
+  // :: (number, ?number) → Fragment
+  // Cut out the sub-fragment between the two given positions.
+  cut(from, to) {
+    if (to == null) to = this.size
+    if (from == 0 && to == this.size) return this
+    let result = [], size = 0
+    if (to > from) for (let i = 0, pos = 0; pos < to; i++) {
+      let child = this.content[i], end = pos + child.nodeSize
+      if (end > from) {
+        if (pos < from || end > to) {
+          if (child.isText)
+            child = child.cut(Math.max(0, from - pos), Math.min(child.text.length, to - pos))
+          else
+            child = child.cut(Math.max(0, from - pos - 1), Math.min(child.content.size, to - pos - 1))
+        }
+        result.push(child)
+        size += child.nodeSize
+      }
+      pos = end
     }
-    return new this.constructor(nodes)
+    return new Fragment(result, size)
   }
 
-  // :: (Schema, Object) → Fragment
+  // :: (Fragment) → Fragment
+  // Create a new fragment containing the content of this fragment and
+  // `other`.
+  append(other) {
+    if (!other.size) return this
+    if (!this.size) return other
+    let last = this.lastChild, first = other.firstChild, content = this.content.slice(), i = 0
+    if (last.isText && last.sameMarkup(first)) {
+      content[content.length - 1] = last.copy(last.text + first.text)
+      i = 1
+    }
+    for (; i < other.content.length; i++) content.push(other.content[i])
+    return new Fragment(content, this.size + other.size)
+  }
+
+  // :: (number, Node) → Fragment
+  // Create a new fragment in which the node at the given index is
+  // replaced by the given node.
+  replaceChild(index, node) {
+    let copy = this.content.slice()
+    let size = this.size + node.nodeSize - copy[index].nodeSize
+    copy[index] = node
+    return new Fragment(copy, size)
+  }
+
+  // (Node) → Fragment
+  // Create a new fragment by prepending the given node to this
+  // fragment.
+  addToStart(node) {
+    return new Fragment([node].concat(this.content), this.size + node.nodeSize)
+  }
+
+  // (Node) → Fragment
+  // Create a new fragment by appending the given node to this
+  // fragment.
+  addToEnd(node) {
+    return new Fragment(this.content.concat(node), this.size + node.nodeSize)
+  }
+
+  // :: () → ?Object
+  // Create a JSON-serializeable representation of this fragment.
+  toJSON() {
+    return this.content.length ? this.content.map(n => n.toJSON()) : null
+  }
+
+  // :: (Schema, ?Object) → Fragment
   // Deserialize a fragment from its JSON representation.
   static fromJSON(schema, value) {
-    return value ? this.fromArray(value.map(schema.nodeFromJSON)) : emptyFragment
+    return value ? new Fragment(value.map(schema.nodeFromJSON)) : Fragment.empty
   }
 
   // :: ([Node]) → Fragment
-  // Build a fragment from an array of nodes.
+  // Build a fragment from an array of nodes. Ensures that adjacent
+  // text nodes with the same style are joined together.
   static fromArray(array) {
-    if (!array.length) return emptyFragment
-    let hasText = false, joined, size = 0
+    if (!array.length) return Fragment.empty
+    let joined, size = 0
     for (let i = 0; i < array.length; i++) {
       let node = array[i]
-      size += node.width
-      if (node.isText) {
-        hasText = true
-        if (i && array[i - 1].sameMarkup(node)) {
-          if (!joined) joined = array.slice(0, i)
-          joined[joined.length - 1] = node.copy(joined[joined.length - 1].text + node.text)
-          continue
-        }
+      size += node.nodeSize
+      if (i && node.isText && array[i - 1].sameMarkup(node)) {
+        if (!joined) joined = array.slice(0, i)
+        joined[joined.length - 1] = node.copy(joined[joined.length - 1].text + node.text)
+      } else if (joined) {
+        joined.push(node)
       }
-      if (joined) joined.push(node)
     }
-    return hasText ? new TextFragment(joined || array, size) : new FlatFragment(array)
+    return new Fragment(joined || array, size)
+  }
+
+  // :: (Fragment) → bool
+  // Compare this fragment to another one.
+  eq(other) {
+    if (this.content.length != other.content.length) return false
+    for (let i = 0; i < this.content.length; i++)
+      if (!this.content[i].eq(other.content[i])) return false
+    return true
   }
 
   // :: (?union<Fragment, Node, [Node]>) → Fragment
@@ -140,69 +148,11 @@ export class Fragment {
   // fragment, the fragment itself. For a node or array of nodes, a
   // fragment containing those nodes.
   static from(nodes) {
-    if (!nodes) return emptyFragment
+    if (!nodes) return Fragment.empty
     if (nodes instanceof Fragment) return nodes
-    return this.fromArray(Array.isArray(nodes) ? nodes : [nodes])
+    if (Array.isArray(nodes)) return this.fromArray(nodes)
+    return new Fragment([nodes], nodes.nodeSize)
   }
-}
-
-const iterEnd = {done: true}
-
-class FlatIterator {
-  constructor(array, pos, end) {
-    this.array = array
-    this.pos = pos
-    this.end = end
-  }
-
-  copy() {
-    return new this.constructor(this.array, this.pos, this.end)
-  }
-
-  atEnd() { return this.pos == this.end }
-
-  next() {
-    return this.pos == this.end ? iterEnd : this.array[this.pos++]
-  }
-
-  get offset() { return this.pos }
-}
-
-class ReverseFlatIterator extends FlatIterator {
-  next() {
-    return this.pos == this.end ? iterEnd : this.array[--this.pos]
-  }
-}
-
-// ;; #forward=Fragment
-class FlatFragment extends Fragment {
-  constructor(content) {
-    super()
-    this.content = content
-  }
-
-  // :: (?number, ?number) → Iterator<Node>
-  // Create a forward iterator over the content of the fragment. An
-  // explicit start and end offset can be given to have the iterator
-  // go over only part of the content. If an iteration bound falls
-  // within a text node, only the part that is within the bounds is
-  // yielded.
-  iter(start = 0, end = this.size) {
-    return new FlatIterator(this.content, start, end)
-  }
-
-  // :: (?number, ?number) → Iterator<Node>
-  // Create a reverse iterator over the content of the fragment. An
-  // explicit start and end offset can be given to have the iterator
-  // go over only part of the content. **Note**: `start` should be
-  // greater than `end`, when passed.
-  reverseIter(start = this.size, end = 0) {
-    return new ReverseFlatIterator(this.content, start, end)
-  }
-
-  // :: number
-  // The maximum offset in this fragment.
-  get size() { return this.content.length }
 
   // :: ?Node
   // The first child of the fragment, or `null` if it is empty.
@@ -212,256 +162,73 @@ class FlatFragment extends Fragment {
   // The last child of the fragment, or `null` if it is empty.
   get lastChild() { return this.content.length ? this.content[this.content.length - 1] : null }
 
+  // :: number
+  // The number of child nodes in this fragment.
+  get childCount() { return this.content.length }
+
   // :: (number) → Node
-  // Get the child at the given offset. Might return a text node that
-  // stretches before and/or after the offset.
-  child(off) {
-    if (off < 0 || off >= this.content.length) throw new ModelError("Offset " + off + " out of range")
-    return this.content[off]
+  // Get the child node at the given index. Raise an error when the
+  // index is out of range.
+  child(index) {
+    let found = this.content[index]
+    if (!found) throw new RangeError("Index " + index + " out of range for " + this)
+    return found
   }
 
-  // :: ((node: Node, start: number, end: number))
-  // Call the given function for each node in the fragment, passing it
-  // the node, its start offset, and its end offset.
+  // :: (number) → ?Node
+  // Get the child node at the given index, if it exists.
+  maybeChild(index) {
+    return this.content[index]
+  }
+
+  // :: ((node: Node, offset: number))
+  // Call `f` for every child node, passing the node and its offset
+  // into this parent node.
   forEach(f) {
-    for (let i = 0; i < this.content.length; i++)
-      f(this.content[i], i, i + 1)
+    for (let i = 0, p = 0; i < this.content.length; i++) {
+      let child = this.content[i]
+      f(child, p)
+      p += child.nodeSize
+    }
   }
 
-  // :: (number) → {start: number, node: Node}
-  // Find the node before the given offset. Returns an object
-  // containing the node as well as its start index. Offset should be
-  // greater than zero.
-  chunkBefore(off) { return {node: this.child(off - 1), start: off - 1} }
-
-  // :: (number) → {start: number, node: Node}
-  // Find the node after the given offset. Returns an object
-  // containing the node as well as its start index. Offset should be
-  // less than the fragment's size.
-  chunkAfter(off) { return {node: this.child(off), start: off} }
-
-  // :: (number, ?number) → Fragment
-  // Return a fragment with only the nodes between the given offsets.
-  // When `to` is not given, the slice will go to the end of the
-  // fragment.
-  slice(from, to = this.size) {
-    if (from == to) return emptyFragment
-    return new FlatFragment(this.content.slice(from, to))
+  leastSuperKind() {
+    let kind
+    for (let i = this.childCount - 1; i >= 0; i--) {
+      let cur = this.child(i).type.kind
+      kind = kind ? kind.sharedSuperKind(cur) : cur
+    }
+    return kind
   }
 
-  // :: (number, Node) → Fragment
-  // Return a fragment in which the node at the given offset is
-  // replaced by the given node. The node, as well as the one it
-  // replaces, should not be text nodes.
-  replace(offset, node) {
-    if (node.isText) throw new ModelError("Argument to replace should be a non-text node")
-    let copy = this.content.slice()
-    copy[offset] = node
-    return new FlatFragment(copy)
+  // : (number, ?number) → {index: number, offset: number}
+  // Find the index and inner offset corresponding to a given relative
+  // position in this fragment. The result object will be reused
+  // (overwritten) the next time the function is called. (Not public.)
+  findIndex(pos, round = -1) {
+    if (pos == 0) return retIndex(0, pos)
+    if (pos == this.size) return retIndex(this.content.length, pos)
+    if (pos > this.size || pos < 0) throw new RangeError(`Position ${pos} outside of fragment (${this})`)
+    for (let i = 0, curPos = 0;; i++) {
+      let cur = this.child(i), end = curPos + cur.nodeSize
+      if (end >= pos) {
+        if (end == pos || round > 0) return retIndex(i + 1, end)
+        return retIndex(i, curPos)
+      }
+      curPos = end
+    }
   }
+}
 
-  appendInner(other, joinLeft, joinRight) {
-    let last = this.content.length - 1, content = this.content.slice(0, last)
-    let before = this.content[last], after = other.firstChild
-    if (joinLeft > 0 && joinRight > 0 && before.sameMarkup(after))
-      content.push(before.append(after.content, joinLeft - 1, joinRight - 1))
-    else
-      content.push(before.close(joinLeft - 1, "end"), after.close(joinRight - 1, "start"))
-    return Fragment.fromArray(content.concat(other.toArray(after.width)))
-  }
-
-  // :: () → Object
-  // Create a JSON-serializeable representation of this fragment.
-  toJSON() {
-    return this.content.map(n => n.toJSON())
-  }
+const found = {index: 0, offset: 0}
+function retIndex(index, offset) {
+  found.index = index
+  found.offset = offset
+  return found
 }
 
 // :: Fragment
 // An empty fragment. Intended to be reused whenever a node doesn't
 // contain anything (rather than allocating a new empty fragment for
 // each leaf node).
-export const emptyFragment = new FlatFragment([])
-
-class TextIterator {
-  constructor(fragment, startOffset, endOffset, pos = -1) {
-    this.frag = fragment
-    this.offset = startOffset
-    this.pos = pos
-    this.endOffset = endOffset
-  }
-
-  copy() {
-    return new this.constructor(this.frag, this.offset, this.endOffset, this.pos)
-  }
-
-  atEnd() { return this.offset == this.endOffset }
-
-  next() {
-    if (this.pos == -1) {
-      let start = this.init()
-      if (start) return start
-    }
-    return this.offset == this.endOffset ? iterEnd : this.advance()
-  }
-
-  advance() {
-    let node = this.frag.content[this.pos++], end = this.offset + node.width
-    if (end > this.endOffset) {
-      node = node.copy(node.text.slice(0, this.endOffset - this.offset))
-      this.offset = this.endOffset
-      return node
-    }
-    this.offset = end
-    return node
-  }
-
-  init() {
-    this.pos = 0
-    let offset = 0
-    while (offset < this.offset) {
-      let node = this.frag.content[this.pos++], end = offset + node.width
-      if (end == this.offset) break
-      if (end > this.offset) {
-        let sliceEnd = node.width
-        if (end > this.endOffset) {
-          sliceEnd = this.endOffset - offset
-          end = this.endOffset
-        }
-        node = node.copy(node.text.slice(this.offset - offset, sliceEnd))
-        this.offset = end
-        return node
-      }
-      offset = end
-    }
-  }
-}
-
-class ReverseTextIterator extends TextIterator {
-  advance() {
-    let node = this.frag.content[--this.pos], end = this.offset - node.width
-    if (end < this.endOffset) {
-      node = node.copy(node.text.slice(this.endOffset - end))
-      this.offset = this.endOffset
-      return node
-    }
-    this.offset = end
-    return node
-  }
-
-  init() {
-    this.pos = this.frag.content.length
-    let offset = this.frag.size
-    while (offset > this.offset) {
-      let node = this.frag.content[--this.pos], end = offset - node.width
-      if (end == this.offset) break
-      if (end < this.offset) {
-        if (end < this.endOffset) {
-          node = node.copy(node.text.slice(this.endOffset - end, this.offset - end))
-          end = this.endOffset
-        } else {
-          node = node.copy(node.text.slice(0, this.offset - end))
-        }
-        this.offset = end
-        return node
-      }
-      offset = end
-    }
-  }
-}
-
-class TextFragment extends Fragment {
-  constructor(content, size) {
-    super()
-    this.content = content
-    this.size = size || 0
-    if (size == null) for (let i = 0; i < content.length; i++)
-      this.size += content[i].width
-  }
-
-  get firstChild() { return this.size ? this.content[0] : null }
-  get lastChild() { return this.size ? this.content[this.content.length - 1] : null }
-
-  iter(from = 0, to = this.size) {
-    return new TextIterator(this, from, to)
-  }
-  reverseIter(from = this.size, to = 0) {
-    return new ReverseTextIterator(this, from, to)
-  }
-
-  child(off) {
-    if (off < 0 || off >= this.size) throw new ModelError("Offset " + off + " out of range")
-    for (let i = 0, curOff = 0; i < this.content.length; i++) {
-      let child = this.content[i]
-      curOff += child.width
-      if (curOff > off) return child
-    }
-  }
-
-  forEach(f) {
-    for (let i = 0, off = 0; i < this.content.length; i++) {
-      let child = this.content[i]
-      f(child, off, off += child.width)
-    }
-  }
-
-  chunkBefore(off) {
-    if (!off) throw new ModelError("No chunk before start of node")
-    for (let i = 0, curOff = 0; i < this.content.length; i++) {
-      let child = this.content[i], end = curOff + child.width
-      if (end >= off) return {node: child, start: curOff}
-      curOff = end
-    }
-  }
-
-  chunkAfter(off) {
-    if (off == this.size) throw new ModelError("No chunk after end of node")
-    for (let i = 0, curOff = 0; i < this.content.length; i++) {
-      let child = this.content[i], end = curOff + child.width
-      if (end > off) return {node: child, start: curOff}
-      curOff = end
-    }
-  }
-
-  slice(from = 0, to = this.size) {
-    if (from == to) return emptyFragment
-    return new TextFragment(this.toArray(from, to), to - from)
-  }
-
-  replace(off, node) {
-    if (node.isText) throw new ModelError("Argument to replace should be a non-text node")
-    let curNode, index
-    for (let curOff = 0; curOff < off; index++) {
-      curNode = this.content[index]
-      curOff += curNode.width
-    }
-    if (curNode.isText) throw new ModelError("Can not replace text content with replace method")
-    let copy = this.content.slice()
-    copy[index] = node
-    return new TextFragment(copy, this.size)
-  }
-
-  appendInner(other, joinLeft, joinRight) {
-    let last = this.content.length - 1, content = this.content.slice(0, last)
-    let before = this.content[last], after = other.firstChild
-    let same = before.sameMarkup(after)
-    if (same && before.isText)
-      content.push(before.copy(before.text + after.text))
-    else if (same && joinLeft > 0 && joinRight > 0)
-      content.push(before.append(after.content, joinLeft - 1, joinRight - 1))
-    else
-      content.push(before.close(joinLeft - 1, "end"), after.close(joinRight - 1, "start"))
-    return Fragment.fromArray(content.concat(other.toArray(after.width)))
-  }
-
-  toJSON() {
-    return this.content.map(n => n.toJSON())
-  }
-}
-
-if (typeof Symbol != "undefined") {
-  // :: () → Iterator<Node>
-  // A fragment is iterable, in the ES6 sense.
-  Fragment.prototype[Symbol.iterator] = function() { return this.iter() }
-  FlatIterator.prototype[Symbol.iterator] = TextIterator.prototype[Symbol.iterator] = function() { return this }
-}
+Fragment.empty = new Fragment([], 0)

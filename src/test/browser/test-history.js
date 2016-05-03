@@ -1,10 +1,10 @@
-import {namespace} from "./def"
-import {doc, p} from "../build"
-import {is, cmp, cmpStr, cmpNode, P} from "../cmp"
+import {namespace, dispatch} from "./def"
+import {doc, p, ul, li} from "../build"
+import {is, cmp, cmpStr, cmpNode} from "../cmp"
 
 const test = namespace("history")
 
-function type(pm, text) { pm.tr.insertText(pm.selection.head, text).apply() }
+function type(pm, text) { pm.tr.replaceSelection(pm.schema.text(text)).apply() }
 
 function cutHistory(pm) { pm.history.lastAddedAt = 0 }
 
@@ -44,30 +44,35 @@ test("multiple", pm => {
 
 test("unsynced", pm => {
   type(pm, "hello")
-  pm.tr.insertText(P(0, 0), "oops").apply({addToHistory: false})
-  pm.tr.insertText(P(0, 9), "!").apply({addToHistory: false})
+  pm.tr.insertText(1, "oops").apply({addToHistory: false})
+  pm.tr.insertText(10, "!").apply({addToHistory: false})
   pm.execCommand("undo")
   cmpNode(pm.doc, doc(p("oops!")))
 })
 
-test("unsynced_complex", pm => {
+function unsyncedComplex(pm, compress) {
   type(pm, "hello")
   cutHistory(pm)
   type(pm, "!")
-  pm.tr.insertText(P(0, 0), "....").apply()
-  pm.tr.split(P(0, 2)).apply()
+  pm.tr.insertText(1, "....").apply({addToHistory: false})
+  pm.tr.split(3).apply()
   cmpNode(pm.doc, doc(p(".."), p("..hello!")))
-  pm.tr.split(P(0, 1)).apply({addToHistory: false})
+  pm.tr.split(2).apply({addToHistory: false})
+  if (compress) pm.history.done.compress(Infinity)
   pm.execCommand("undo")
   cmpNode(pm.doc, doc(p("."), p("...hello")))
   pm.execCommand("undo")
   cmpNode(pm.doc, doc(p("."), p("...")))
-})
+}
+
+test("unsynced_complex", pm => unsyncedComplex(pm, false))
+
+test("unsynced_complex_compress", pm => unsyncedComplex(pm, true))
 
 test("overlapping", pm => {
   type(pm, "hello")
   cutHistory(pm)
-  pm.tr.delete(P(0, 0), P(0, 5)).apply()
+  pm.tr.delete(1, 6).apply()
   cmpNode(pm.doc, doc(p()))
   pm.execCommand("undo")
   cmpNode(pm.doc, doc(p("hello")))
@@ -79,7 +84,7 @@ test("overlapping_no_collapse", pm => {
   pm.history.allowCollapsing = false
   type(pm, "hello")
   cutHistory(pm)
-  pm.tr.delete(P(0, 0), P(0, 5)).apply()
+  pm.tr.delete(1, 6).apply()
   cmpNode(pm.doc, doc(p()))
   pm.execCommand("undo")
   cmpNode(pm.doc, doc(p("hello")))
@@ -91,7 +96,7 @@ test("overlapping_unsynced_delete", pm => {
   type(pm, "hi")
   cutHistory(pm)
   type(pm, "hello")
-  pm.tr.delete(P(0, 0), P(0, 7)).apply({addToHistory: false})
+  pm.tr.delete(1, 8).apply({addToHistory: false})
   cmpNode(pm.doc, doc(p()))
   pm.execCommand("undo")
   cmpNode(pm.doc, doc(p()))
@@ -102,10 +107,10 @@ test("ping_pong", pm => {
   type(pm, " two")
   cutHistory(pm)
   type(pm, " three")
-  pm.tr.insertText(P(0, 0), "zero ").apply()
+  pm.tr.insertText(1, "zero ").apply()
   cutHistory(pm)
-  pm.tr.split(P(0, 0)).apply()
-  pm.setTextSelection(P(0, 0))
+  pm.tr.split(1).apply()
+  pm.setTextSelection(1)
   type(pm, "top")
   for (let i = 0; i < 6; i++) {
     let re = i % 2
@@ -115,43 +120,35 @@ test("ping_pong", pm => {
   }
 })
 
+test("eat_neighboring", pm => {
+  type(pm, "o")
+  pm.tr.split(1).apply()
+  pm.tr.insertText(3, "zzz").apply({addToHistory: false})
+  pm.execCommand("undo")
+  cmpNode(pm.doc, doc(p("zzz")))
+})
+
 test("ping_pong_unsynced", pm => {
   type(pm, "one")
   type(pm, " two")
   cutHistory(pm)
   pm.tr.insertText(pm.selection.head, "xxx").apply({addToHistory: false})
   type(pm, " three")
-  pm.tr.insertText(P(0, 0), "zero ").apply()
+  pm.tr.insertText(1, "zero ").apply()
   cutHistory(pm)
-  pm.tr.split(P(0, 0)).apply()
-  pm.setTextSelection(P(0, 0))
+  pm.tr.split(1).apply()
+  pm.setTextSelection(1)
   type(pm, "top")
-  pm.tr.insertText(P(0, 0), "yyy").apply({addToHistory: false})
-  pm.tr.insertText(P(0, 6), "zzz").apply({addToHistory: false})
-  for (let i = 0; i < 6; i++) {
-    let re = i % 2
-    for (let j = 0; j < 4; j++)
-      cmp(pm.history[re ? "redo" : "undo"](), j < 3)
-    cmpNode(pm.doc, re ? doc(p("yyytopzzz"), p("zero one twoxxx three")) : doc(p("yyyzzz"), p("xxx")))
+  pm.tr.insertText(1, "yyy").apply({addToHistory: false})
+  pm.tr.insertText(7, "zzz").apply({addToHistory: false})
+  for (let i = 0; i < 3; i++) {
+    if (i == 2) pm.history.done.compress(Infinity)
+    for (let j = 0; j < 4; j++) cmp(pm.history.undo(), j < 3)
+    cmpNode(pm.doc, doc(p("yyyzzzxxx")), i + " undo")
+    if (i == 2) pm.history.undone.compress(Infinity)
+    for (let j = 0; j < 4; j++) cmp(pm.history.redo(), j < 3)
+    cmpNode(pm.doc, doc(p("yyytopzzz"), p("zero one twoxxx three")), i + " redo")
   }
-})
-
-test("compressable", pm => {
-  type(pm, "XY")
-  pm.setTextSelection(P(0, 1))
-  cutHistory(pm)
-  type(pm, "one")
-  type(pm, "two")
-  type(pm, "three")
-  pm.tr.insertText(P(0, 13), "!").apply({addToHistory: false})
-  pm.history.done.startCompression(pm.doc)
-  cmpNode(pm.doc, doc(p("XonetwothreeY!")))
-  pm.execCommand("undo")
-  cmpNode(pm.doc, doc(p("XY!")))
-  cmpStr(pm.selection.anchor, P(0, 1))
-  pm.execCommand("redo")
-  cmpNode(pm.doc, doc(p("XonetwothreeY!")))
-  cmpStr(pm.selection.anchor, P(0, 12))
 })
 
 test("setDocResets", pm => {
@@ -189,10 +186,17 @@ test("rollback", pm => {
   is(!pm.history.backToVersion(version), "failed rollback")
 })
 
+test("rollback_to_start", pm => {
+  let version = pm.history.getVersion()
+  type(pm, "def")
+  pm.history.backToVersion(version)
+  cmpNode(pm.doc, doc(p("abc")))
+}, {doc: doc(p("abc"))})
+
 test("setSelectionOnUndo", pm => {
   type(pm, "hi")
   cutHistory(pm)
-  pm.setTextSelection(P(0, 0), P(0, 2))
+  pm.setTextSelection(1, 3)
   let selection = pm.selection
   pm.tr.replaceWith(selection.from, selection.to, pm.schema.text("hello")).apply()
   let selection2 = pm.selection
@@ -202,13 +206,66 @@ test("setSelectionOnUndo", pm => {
   is(pm.selection.eq(selection2), "failed restoring selection after redo")
 })
 
-
 test("rebaseSelectionOnUndo", pm => {
   type(pm, "hi")
   cutHistory(pm)
-  pm.setTextSelection(P(0, 0), P(0, 2))
-  pm.tr.insert(P(0, 0), pm.schema.text("hello")).apply()
-  pm.tr.insert(P(0, 0), pm.schema.text("---")).apply({addToHistory: false})
+  pm.setTextSelection(1, 3)
+  pm.tr.insert(1, pm.schema.text("hello")).apply()
+  pm.tr.insert(1, pm.schema.text("---")).apply({addToHistory: false})
   pm.execCommand("undo")
-  cmpStr(pm.selection.head, P(0, 5))
+  cmpStr(pm.selection.head, 6)
 })
+
+test("unsynced_overwrite", pm => {
+  pm.history.preserveItems++
+  type(pm, "a")
+  type(pm, "b")
+  cutHistory(pm)
+  pm.setTextSelection(1, 3)
+  type(pm, "c")
+  pm.history.undo()
+  pm.history.undo()
+  cmpNode(pm.doc, doc(p()))
+})
+
+test("unsynced_list_manip", pm => {
+  pm.history.preserveItems++
+  dispatch(pm, "Enter")
+  pm.execCommand("list_item:sink")
+  type(pm, "abc")
+  cutHistory(pm)
+  dispatch(pm, "Enter")
+  dispatch(pm, "Enter")
+  cmpNode(pm.doc, doc(ul(li(p("hello"), ul(li(p("abc"))), p()))))
+  pm.history.undo()
+  cmpNode(pm.doc, doc(ul(li(p("hello"), ul(li(p("abc")))))))
+  pm.history.undo()
+  cmpNode(pm.doc, doc(ul(li(p("hello")))))
+}, {doc: doc(ul(li(p("hello<a>"))))})
+
+test("unsynced_list_indent", pm => {
+  pm.history.preserveItems++
+  dispatch(pm, "Enter")
+  pm.execCommand("list_item:sink")
+  type(pm, "abc")
+  cutHistory(pm)
+  dispatch(pm, "Enter")
+  pm.execCommand("list_item:sink")
+  type(pm, "def")
+  cutHistory(pm)
+  pm.setTextSelection(12)
+  pm.execCommand("list_item:lift")
+  cmpNode(pm.doc, doc(ul(li(p("hello")), li(p("abc"), ul(li(p("def")))))))
+  pm.history.undo()
+  cmpNode(pm.doc, doc(ul(li(p("hello"), ul(li(p("abc"), ul(li(p("def")))))))))
+  pm.history.undo()
+  cmpNode(pm.doc, doc(ul(li(p("hello"), ul(li(p("abc")))))))
+  pm.history.undo()
+  cmpNode(pm.doc, doc(ul(li(p("hello")))))
+  pm.history.redo()
+  cmpNode(pm.doc, doc(ul(li(p("hello"), ul(li(p("abc")))))))
+  pm.history.redo()
+  cmpNode(pm.doc, doc(ul(li(p("hello"), ul(li(p("abc"), ul(li(p("def")))))))))
+  pm.history.redo()
+  cmpNode(pm.doc, doc(ul(li(p("hello")), li(p("abc"), ul(li(p("def")))))))
+}, {doc: doc(ul(li(p("hello<a>"))))})
