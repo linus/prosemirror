@@ -19,7 +19,7 @@ class Option {
 
 const options = Object.create(null)
 
-// :: (string, any, (pm: ProseMirror, newValue: any, oldValue: any, init: bool), bool)
+// :: (string, any, ?(pm: ProseMirror, newValue: any, oldValue: any, init: bool), bool)
 // Define a new option. The `update` handler will be called with the
 // option's old and new value every time the option is
 // [changed](#ProseMirror.setOption). When `updateOnInit` is false, it
@@ -31,7 +31,7 @@ export function defineOption(name, defaultValue, update, updateOnInit) {
 
 // :: Schema #path=schema #kind=option
 // The [schema](#Schema) that the editor's document should use.
-defineOption("schema", defaultSchema, false)
+defineOption("schema", defaultSchema)
 
 // :: any #path=doc #kind=option
 // The starting document. Usually a `Node`, but can be in another
@@ -60,6 +60,17 @@ defineOption("historyDepth", 100)
 // The amount of milliseconds that must pass between changes to
 // start a new history event. Defaults to 500.
 defineOption("historyEventDelay", 500)
+
+// :: number #path=scrollThreshold #kind=option
+// The minimum distance to keep between the position of document
+// changes and the editor bounding rectangle before scrolling the view.
+// Defaults to 0.
+defineOption("scrollThreshold", 0)
+
+// :: number #path=scrollMargin #kind=option
+// Determines how far to scroll when the scroll threshold is
+// surpassed. Defaults to 5.
+defineOption("scrollMargin", 5)
 
 // :: CommandSet #path=commands #kind=option
 // Specifies the set of [commands](#Command) available in the editor
