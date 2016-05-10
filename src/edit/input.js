@@ -430,22 +430,6 @@ function clipOpen(fragment, max, start) {
 
 handlers.copy = handlers.cut = (pm, e) => {
   let {from, to, empty} = pm.selection
-  if(!e.clipboardData && window.clipboardData) {
-    window.klip = window.klip || {}
-    e.clipboardData = {
-      clearData () {
-        window.klip = {}
-        return window.clipboardData.clearData()
-      }
-      getData (type) {
-        return window.klip[type] || window.clipboardData.getData("text")
-      }
-      setData (type, data) {
-        window.klip[type] = data
-        return window.clipboardData.setData("text", data)
-      }
-    }
-  }
   if (empty || !e.clipboardData || !canUpdateClipboard(e.clipboardData)) return
   toClipboard(pm.doc, from, to, e.clipboardData)
   e.preventDefault()
@@ -455,15 +439,7 @@ handlers.copy = handlers.cut = (pm, e) => {
 
 handlers.paste = (pm, e) => {
   if (!hasFocus(pm)) return
-  if (!e.clipboardData) {
-    if(!window.clipboardData) return
-
-    e.clipboardData = {
-      getData (type) {
-        return window.klip[type] || window.clipboardData.getData("text")
-      }
-    }
-  }
+  if (!e.clipboardData) return
   let sel = pm.selection
   let slice = fromClipboard(pm, e.clipboardData, pm.input.shiftKey)
   if (slice) {
